@@ -16,6 +16,7 @@ function setupHelpCommand(bot) {
       helpMessage += `👥 **Para Todos:**\n`;
       helpMessage += `/start - Registrar-se no sistema\n`;
       helpMessage += `/assinatura - Ver status da sua assinatura\n`;
+      helpMessage += `/assinaturas - Ver status da sua assinatura\n`;
       helpMessage += `/renovar - Informações para renovar\n`;
       helpMessage += `/help - Mostrar esta mensagem\n\n`;
 
@@ -29,6 +30,11 @@ function setupHelpCommand(bot) {
         helpMessage += `/register - Registrar vencedores\n`;
         helpMessage += `/log - Configurar logs (owner)\n`;
         helpMessage += `/caixa - Ver saldo da comunidade\n\n`;
+
+        helpMessage += `📊 **Consultas (Privado):**\n`;
+        helpMessage += `/sorteios - Ver sorteios por status\n`;
+        helpMessage += `/participantes <código> - Ver participantes de um sorteio\n`;
+        helpMessage += `/assinaturas - Gerenciar assinaturas (ativas/expiradas/canceladas)\n\n`;
 
         helpMessage += `📊 **Sistema de Logs:**\n`;
         helpMessage += `Use /log em um tópico para configurar:\n`;
