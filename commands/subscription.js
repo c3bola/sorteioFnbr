@@ -21,7 +21,7 @@ function setupSubscriptionCommand(bot) {
       // Verificar assinatura usando stored procedure
       const result = await db.callProcedure('sp_check_subscription', [userId, CLUBINHO_GROUP_ID]);
 
-      if (!result || result.length === 0 || !result[0].is_active) {
+      if (!result || result.length === 0 || !result[0].can_participate) {
         return ctx.reply(
           '❌ *Você não possui assinatura ativa.*\n\n' +
           '💡 Entre em contato com um administrador para adquirir.\n' +
