@@ -1,0 +1,40 @@
+{
+  "name": "sorteio-fnbr-bot",
+  "version": "1.0.0",
+  "description": "Bot de sorteios para comunidades Fortnite Brasil no Telegram com sistema de assinaturas e notificações automáticas",
+  "main": "sorteiofnbr.js",
+  "scripts": {
+    "start": "node sorteiofnbr.js",
+    "dev": "node sorteiofnbr.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "sorteios",
+    "fortnite",
+    "raffles",
+    "subscription",
+    "mysql",
+    "telegraf"
+  ],
+  "author": "C3bola <fnc3bola@gmail.com>",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/c3bola/sorteio-fnbr-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/c3bola/sorteio-fnbr-bot/issues"
+  },
+  "homepage": "https://github.com/c3bola/sorteio-fnbr-bot#readme",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "mysql2": "^3.15.3",
+    "telegraf": "^4.16.3"
+  }
+}
