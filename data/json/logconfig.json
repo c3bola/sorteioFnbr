@@ -1,0 +1,11 @@
+{
+  "logGroup": -1002578635990,
+  "topics": {
+    "settings": 9,
+    "basic": 2918,
+    "raffle": 2918,
+    "subscription": 2918,
+    "admin": 9,
+    "error": 8
+  }
+}
