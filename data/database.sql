@@ -318,10 +318,15 @@ LEFT JOIN tbRaffles r ON u.idUser = r.fkIdUser
 GROUP BY u.idUser
 ORDER BY totalWins DESC, totalParticipations DESC;
 
--- View: Assinaturas ativas
-CREATE OR REPLACE VIEW vw_active_subscriptions AS
+-- =====================================================
+-- View: Última assinatura de cada usuário (BASE para outras views)
+-- Remove duplicatas, mostrando apenas a assinatura mais recente por status
+-- =====================================================
+CREATE OR REPLACE VIEW vw_latest_subscriptions AS
 SELECT 
   s.idSubscription,
+  s.fkIdUser,
+  s.fkIdGroup,
   u.idUser,
   (SELECT mu.valueMetadata FROM tbMetadataUser mu 
    JOIN tbMetadata m ON mu.fkIdMetadata = m.idMetadata 
@@ -332,36 +337,112 @@ SELECT
   g.nameGroup,
   s.startDate,
   s.endDate,
+  s.statusSubscription,
   s.amountPaid,
-  DATEDIFF(s.endDate, CURDATE()) AS daysRemaining
+  s.paymentMethod,
+  DATEDIFF(s.endDate, CURDATE()) AS daysRemaining,
+  s.createdAt,
+  s.updatedAt
 FROM tbSubscription s
 INNER JOIN tbUser u ON s.fkIdUser = u.idUser
 INNER JOIN tbGroup g ON s.fkIdGroup = g.idGroup
-WHERE s.statusSubscription = 'active'
-  AND s.endDate >= CURDATE()
-ORDER BY s.endDate ASC;
+INNER JOIN (
+  -- Subquery que pega apenas a assinatura mais recente de cada usuário/grupo/status
+  SELECT 
+    fkIdUser, 
+    fkIdGroup, 
+    statusSubscription,
+    MAX(endDate) as maxEndDate,
+    MAX(idSubscription) as maxId
+  FROM tbSubscription
+  GROUP BY fkIdUser, fkIdGroup, statusSubscription
+) latest ON s.fkIdUser = latest.fkIdUser 
+        AND s.fkIdGroup = latest.fkIdGroup 
+        AND s.statusSubscription = latest.statusSubscription
+        AND s.endDate = latest.maxEndDate
+        AND s.idSubscription = latest.maxId;
+
+-- View: Assinaturas ativas (sem duplicatas)
+CREATE OR REPLACE VIEW vw_active_subscriptions AS
+SELECT 
+  idSubscription,
+  fkIdUser,
+  fkIdGroup,
+  idUser,
+  nameUser,
+  usernameUser,
+  nameGroup,
+  startDate,
+  endDate,
+  amountPaid,
+  paymentMethod,
+  daysRemaining,
+  createdAt,
+  updatedAt
+FROM vw_latest_subscriptions
+WHERE statusSubscription = 'active'
+  AND endDate >= CURDATE()
+ORDER BY endDate ASC;
+
+-- View: Assinaturas expiradas (sem duplicatas)
+CREATE OR REPLACE VIEW vw_expired_subscriptions AS
+SELECT 
+  idSubscription,
+  fkIdUser,
+  fkIdGroup,
+  idUser,
+  nameUser,
+  usernameUser,
+  nameGroup,
+  startDate,
+  endDate,
+  amountPaid,
+  paymentMethod,
+  daysRemaining,
+  createdAt,
+  updatedAt
+FROM vw_latest_subscriptions
+WHERE statusSubscription = 'expired'
+ORDER BY endDate DESC;
+
+-- View: Assinaturas canceladas (sem duplicatas)
+CREATE OR REPLACE VIEW vw_cancelled_subscriptions AS
+SELECT 
+  idSubscription,
+  fkIdUser,
+  fkIdGroup,
+  idUser,
+  nameUser,
+  usernameUser,
+  nameGroup,
+  startDate,
+  endDate,
+  amountPaid,
+  paymentMethod,
+  daysRemaining,
+  createdAt,
+  updatedAt
+FROM vw_latest_subscriptions
+WHERE statusSubscription = 'cancelled'
+ORDER BY endDate DESC;
 
 -- View: Assinaturas expirando em breve (próximos 7 dias)
 CREATE OR REPLACE VIEW vw_expiring_subscriptions AS
 SELECT 
-  s.idSubscription,
-  u.idUser,
-  (SELECT mu.valueMetadata FROM tbMetadataUser mu 
-   JOIN tbMetadata m ON mu.fkIdMetadata = m.idMetadata 
-   WHERE mu.fkIdUser = u.idUser AND m.nameMetadata = 'name' LIMIT 1) AS nameUser,
-  (SELECT mu.valueMetadata FROM tbMetadataUser mu 
-   JOIN tbMetadata m ON mu.fkIdMetadata = m.idMetadata 
-   WHERE mu.fkIdUser = u.idUser AND m.nameMetadata = 'username' LIMIT 1) AS usernameUser,
-  g.nameGroup,
-  s.endDate,
-  DATEDIFF(s.endDate, CURDATE()) AS daysRemaining
-FROM tbSubscription s
-INNER JOIN tbUser u ON s.fkIdUser = u.idUser
-INNER JOIN tbGroup g ON s.fkIdGroup = g.idGroup
-WHERE s.statusSubscription = 'active'
-  AND s.endDate >= CURDATE()
-  AND s.endDate <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-ORDER BY s.endDate ASC;
+  idSubscription,
+  fkIdUser,
+  fkIdGroup,
+  idUser,
+  nameUser,
+  usernameUser,
+  nameGroup,
+  endDate,
+  daysRemaining,
+  amountPaid
+FROM vw_active_subscriptions
+WHERE daysRemaining <= 7
+  AND daysRemaining >= 0
+ORDER BY endDate ASC;
 
 -- View: Resumo de sorteios
 CREATE OR REPLACE VIEW vw_raffle_summary AS
