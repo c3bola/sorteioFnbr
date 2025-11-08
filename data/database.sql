@@ -56,22 +56,24 @@ COLLATE = utf8mb4_unicode_ci
 COMMENT = 'Usuários do sistema - dados pessoais em tbMetadataUser';
 
 -- =====================================================
--- Tabela: tbMetadata (Definição de Metadados)
--- Define quais metadados podem ser armazenados
+-- Tabela: tbMetadata (Definição de Metadados UNIFICADA)
+-- Define quais metadados podem ser armazenados para TODAS as entidades
 -- =====================================================
 CREATE TABLE IF NOT EXISTS `tbMetadata` (
   `idMetadata` INT NOT NULL AUTO_INCREMENT,
-  `nameMetadata` VARCHAR(100) NOT NULL COMMENT 'Nome do metadado: language, loyalty_points, etc',
+  `nameMetadata` VARCHAR(100) NOT NULL COMMENT 'Nome do metadado: language, loyalty_points, raffle_title, etc',
+  `entityType` ENUM('user', 'raffle', 'group', 'subscription', 'general') NOT NULL DEFAULT 'user' COMMENT 'Tipo de entidade: user, raffle, group, etc',
   `typeMetadata` ENUM('string', 'number', 'boolean', 'json', 'date') NOT NULL DEFAULT 'string' COMMENT 'Tipo do dado',
   `descriptionMetadata` VARCHAR(255) NULL COMMENT 'Descrição do metadado',
   `statusMetadata` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1 = ativo, 0 = inativo',
   `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`idMetadata`),
-  UNIQUE INDEX `idx_name_metadata` (`nameMetadata` ASC)
+  UNIQUE INDEX `idx_name_metadata` (`nameMetadata` ASC),
+  INDEX `idx_entity_type` (`entityType` ASC)
 ) ENGINE = InnoDB
 DEFAULT CHARACTER SET = utf8mb4
 COLLATE = utf8mb4_unicode_ci
-COMMENT = 'Definições de metadados disponíveis';
+COMMENT = 'Definições de metadados UNIFICADAS para todas as entidades';
 
 -- =====================================================
 -- Tabela: tbMetadataUser (Valores dos Metadados por Usuário)
@@ -100,6 +102,37 @@ CREATE TABLE IF NOT EXISTS `tbMetadataUser` (
 DEFAULT CHARACTER SET = utf8mb4
 COLLATE = utf8mb4_unicode_ci
 COMMENT = 'Valores dos metadados por usuário';
+
+-- =====================================================
+-- Tabela: tbMetadataRaffle (Valores dos Metadados por Sorteio)
+-- Armazena os valores dos metadados para cada sorteio
+-- Usa a mesma tbMetadata unificada (entityType = 'raffle')
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `tbMetadataRaffle` (
+  `idMetadataRaffle` INT NOT NULL AUTO_INCREMENT,
+  `fkIdRafflesDetails` VARCHAR(50) NOT NULL COMMENT 'ID do sorteio',
+  `fkIdMetadata` INT NOT NULL COMMENT 'ID do metadado',
+  `valueMetadata` TEXT NULL COMMENT 'Valor do metadado',
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`idMetadataRaffle`),
+  UNIQUE INDEX `idx_unique_raffle_metadata` (`fkIdRafflesDetails` ASC, `fkIdMetadata` ASC),
+  INDEX `idx_raffle` (`fkIdRafflesDetails` ASC),
+  INDEX `idx_metadata` (`fkIdMetadata` ASC),
+  CONSTRAINT `fk_metadata_raffle_raffle`
+    FOREIGN KEY (`fkIdRafflesDetails`)
+    REFERENCES `tbRafflesDetails` (`idRafflesDetails`)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE,
+  CONSTRAINT `fk_metadata_raffle_definition`
+    FOREIGN KEY (`fkIdMetadata`)
+    REFERENCES `tbMetadata` (`idMetadata`)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+) ENGINE = InnoDB
+DEFAULT CHARACTER SET = utf8mb4
+COLLATE = utf8mb4_unicode_ci
+COMMENT = 'Valores dos metadados por sorteio - usa tbMetadata unificada';
 
 -- =====================================================
 -- Tabela: tbGroup (Grupos do Telegram)
@@ -1139,6 +1172,183 @@ BEGIN
     CURRENT_TIMESTAMP AS drawn_at
   FROM tbRaffles
   WHERE fkIdRafflesDetails = p_raffle_id;
+END //
+
+DELIMITER ;
+
+-- =====================================================
+-- SEÇÃO: METADADOS DE SORTEIOS (Sistema Unificado)
+-- Usa tbMetadata unificada (entityType = 'raffle')
+-- =====================================================
+
+-- =====================================================
+-- Inserir metadados de sorteio em tbMetadata unificada
+-- =====================================================
+INSERT IGNORE INTO `tbMetadata` 
+  (`nameMetadata`, `entityType`, `typeMetadata`, `descriptionMetadata`, `statusMetadata`) 
+VALUES
+  ('raffle_title', 'raffle', 'string', 'Título do sorteio extraído da legenda', 1),
+  ('raffle_date', 'raffle', 'string', 'Data programada do sorteio (formato: DD/MM/YYYY)', 1),
+  ('raffle_type', 'raffle', 'string', 'Tipo do sorteio (Exclusivo, Teste, etc)', 1),
+  ('prize_description', 'raffle', 'string', 'Descrição detalhada do prêmio', 1),
+  ('prize_items', 'raffle', 'json', 'Lista de itens do prêmio em formato JSON', 1),
+  ('file_id', 'raffle', 'string', 'ID do arquivo/imagem do sorteio no Telegram', 1),
+  ('winner_announcement_date', 'raffle', 'date', 'Data de anúncio dos vencedores', 1),
+  ('minimum_participants', 'raffle', 'number', 'Número mínimo de participantes para realizar o sorteio', 1),
+  ('requires_photo', 'raffle', 'boolean', 'Se requer foto do recibo de pagamento', 1);
+
+-- =====================================================
+-- VIEW: vw_raffle_full
+-- Facilita consulta de sorteios com seus metadados
+-- =====================================================
+CREATE OR REPLACE VIEW `vw_raffle_full` AS
+SELECT 
+  rd.idRafflesDetails,
+  rd.fkIdGroup,
+  rd.numWinners,
+  rd.participantCount,
+  rd.statusRaffles,
+  rd.prizeDescription,
+  rd.fileIdRaffles,
+  rd.createdAt,
+  rd.performedAt,
+  g.nameGroup,
+  -- Metadados principais via tbMetadataRaffle
+  (SELECT mr.valueMetadata FROM tbMetadataRaffle mr 
+   JOIN tbMetadata m ON mr.fkIdMetadata = m.idMetadata 
+   WHERE mr.fkIdRafflesDetails = rd.idRafflesDetails 
+   AND m.nameMetadata = 'raffle_title' AND m.entityType = 'raffle' LIMIT 1) AS raffle_title,
+  (SELECT mr.valueMetadata FROM tbMetadataRaffle mr 
+   JOIN tbMetadata m ON mr.fkIdMetadata = m.idMetadata 
+   WHERE mr.fkIdRafflesDetails = rd.idRafflesDetails 
+   AND m.nameMetadata = 'raffle_date' AND m.entityType = 'raffle' LIMIT 1) AS raffle_date,
+  (SELECT mr.valueMetadata FROM tbMetadataRaffle mr 
+   JOIN tbMetadata m ON mr.fkIdMetadata = m.idMetadata 
+   WHERE mr.fkIdRafflesDetails = rd.idRafflesDetails 
+   AND m.nameMetadata = 'raffle_type' AND m.entityType = 'raffle' LIMIT 1) AS raffle_type
+FROM tbRafflesDetails rd
+INNER JOIN tbGroup g ON rd.fkIdGroup = g.idGroup;
+
+-- =====================================================
+-- STORED PROCEDURES DE METADATA DE SORTEIOS
+-- =====================================================
+
+-- =====================================================
+-- PROCEDURE: sp_set_raffle_meta
+-- Define ou atualiza um metadado de sorteio
+-- =====================================================
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_set_raffle_meta //
+
+CREATE PROCEDURE sp_set_raffle_meta(
+  IN p_raffle_id VARCHAR(50),
+  IN p_meta_key VARCHAR(100),
+  IN p_meta_value TEXT
+)
+BEGIN
+  DECLARE v_metadata_id INT;
+  
+  -- Buscar ID do metadado pelo nome (apenas raffle)
+  SELECT idMetadata INTO v_metadata_id
+  FROM tbMetadata
+  WHERE nameMetadata = p_meta_key 
+    AND entityType = 'raffle' 
+    AND statusMetadata = 1;
+  
+  IF v_metadata_id IS NULL THEN
+    SIGNAL SQLSTATE '45000'
+    SET MESSAGE_TEXT = 'Metadado de raffle não encontrado ou inativo';
+  END IF;
+  
+  -- Inserir ou atualizar
+  INSERT INTO tbMetadataRaffle (fkIdRafflesDetails, fkIdMetadata, valueMetadata)
+  VALUES (p_raffle_id, v_metadata_id, p_meta_value)
+  ON DUPLICATE KEY UPDATE 
+    valueMetadata = p_meta_value,
+    updatedAt = CURRENT_TIMESTAMP;
+END //
+
+DELIMITER ;
+
+-- =====================================================
+-- PROCEDURE: sp_get_raffle_meta
+-- Obtém um metadado específico do sorteio
+-- =====================================================
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_get_raffle_meta //
+
+CREATE PROCEDURE sp_get_raffle_meta(
+  IN p_raffle_id VARCHAR(50),
+  IN p_meta_key VARCHAR(100)
+)
+BEGIN
+  SELECT 
+    m.nameMetadata,
+    mr.valueMetadata,
+    m.typeMetadata,
+    mr.updatedAt
+  FROM tbMetadataRaffle mr
+  JOIN tbMetadata m ON mr.fkIdMetadata = m.idMetadata
+  WHERE mr.fkIdRafflesDetails = p_raffle_id 
+    AND m.nameMetadata = p_meta_key
+    AND m.entityType = 'raffle'
+    AND m.statusMetadata = 1;
+END //
+
+DELIMITER ;
+
+-- =====================================================
+-- PROCEDURE: sp_get_all_raffle_meta
+-- Obtém todos os metadados de um sorteio
+-- =====================================================
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_get_all_raffle_meta //
+
+CREATE PROCEDURE sp_get_all_raffle_meta(
+  IN p_raffle_id VARCHAR(50)
+)
+BEGIN
+  SELECT 
+    m.nameMetadata AS meta_key,
+    mr.valueMetadata AS meta_value,
+    m.typeMetadata AS meta_type,
+    m.descriptionMetadata AS meta_description,
+    mr.createdAt,
+    mr.updatedAt
+  FROM tbMetadataRaffle mr
+  JOIN tbMetadata m ON mr.fkIdMetadata = m.idMetadata
+  WHERE mr.fkIdRafflesDetails = p_raffle_id
+    AND m.entityType = 'raffle'
+    AND m.statusMetadata = 1
+  ORDER BY m.nameMetadata;
+END //
+
+DELIMITER ;
+
+-- =====================================================
+-- PROCEDURE: sp_delete_raffle_meta
+-- Deleta um metadado específico do sorteio
+-- =====================================================
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_delete_raffle_meta //
+
+CREATE PROCEDURE sp_delete_raffle_meta(
+  IN p_raffle_id VARCHAR(50),
+  IN p_meta_key VARCHAR(100)
+)
+BEGIN
+  DECLARE v_metadata_id INT;
+  
+  SELECT idMetadata INTO v_metadata_id
+  FROM tbMetadata
+  WHERE nameMetadata = p_meta_key AND entityType = 'raffle';
+  
+  DELETE FROM tbMetadataRaffle
+  WHERE fkIdRafflesDetails = p_raffle_id AND fkIdMetadata = v_metadata_id;
 END //
 
 DELIMITER ;
