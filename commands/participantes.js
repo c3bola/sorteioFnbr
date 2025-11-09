@@ -1,47 +1,100 @@
 const db = require('../data/database');
+const { Markup } = require('telegraf');
+const raffleMetadata = require('../utils/raffleMetadata');
 
 /**
- * Comando /participantes - Listar participantes de um sorteio (apenas admins no privado)
+ * Comando /participantes - Listar participantes de um sorteio (disponível para todos)
  */
 function setupParticipantesCommand(bot) {
   
   bot.command('participantes', async (ctx) => {
     const userId = ctx.from.id;
     const chatId = ctx.chat.id;
+    const isPrivate = ctx.chat.type === 'private';
+    const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
 
     try {
-      // Verificar se está no privado
-      if (ctx.chat.type !== 'private') {
-        return ctx.reply('❌ Este comando só pode ser usado no privado do bot.');
-      }
-
-      // Verificar se é admin (qualquer grupo)
-      const adminCheck = await db.query(
-        `SELECT u.idUser 
-         FROM tbUser u
-         JOIN tbPerfilUser p ON u.fkIdPerfilUser = p.idPerfilUser
-         WHERE u.idUser = ? 
-           AND p.statusPerfilUser = 1
-           AND p.namePerfilUser IN ('owner', 'admin', 'moderator')`,
-        [userId]
-      );
-
-      if (!adminCheck || adminCheck.length === 0) {
-        return ctx.reply('❌ Apenas administradores podem usar este comando.');
-      }
-
       // Pegar o código do sorteio
       const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
 
       if (!args) {
+        // Sem argumentos - mostrar lista de sorteios ativos com botões
+        
+        let query, params;
+        
+        if (isGroup) {
+          // Se estiver em grupo, mostrar apenas sorteios deste grupo
+          query = `SELECT 
+            rd.idRafflesDetails,
+            rd.prizeDescription,
+            rd.participantCount,
+            rd.createdAt,
+            g.nameGroup,
+            g.idGroup
+          FROM tbRafflesDetails rd
+          INNER JOIN tbGroup g ON rd.fkIdGroup = g.idGroup
+          WHERE rd.statusRaffles = 'open' AND rd.fkIdGroup = ?
+          ORDER BY rd.createdAt DESC
+          LIMIT 20`;
+          params = [chatId];
+        } else {
+          // No privado, buscar grupos onde o usuário participou de sorteios
+          query = `SELECT DISTINCT
+            rd.idRafflesDetails,
+            rd.prizeDescription,
+            rd.participantCount,
+            rd.createdAt,
+            g.nameGroup,
+            g.idGroup
+          FROM tbRafflesDetails rd
+          INNER JOIN tbGroup g ON rd.fkIdGroup = g.idGroup
+          INNER JOIN tbRaffles r ON rd.idRafflesDetails = r.fkIdRafflesDetails
+          WHERE rd.statusRaffles = 'open' 
+            AND r.fkIdUser = ?
+          ORDER BY rd.createdAt DESC
+          LIMIT 20`;
+          params = [userId];
+        }
+        
+        const activeRaffles = await db.query(query, params);
+
+        if (!activeRaffles || activeRaffles.length === 0) {
+          const message = isGroup 
+            ? '📭 <b>Nenhum sorteio ativo neste grupo</b>\n\nNão há sorteios abertos neste grupo no momento.'
+            : '📭 <b>Nenhum sorteio encontrado</b>\n\nVocê não está participando de nenhum sorteio ativo no momento.\n\n💡 Participe de sorteios nos grupos para vê-los aqui!';
+          
+          return ctx.reply(message, { parse_mode: 'HTML' });
+        }
+
+        // Criar botões inline com os sorteios
+        const buttons = [];
+        
+        for (const raffle of activeRaffles) {
+          // Buscar data do metadata
+          const raffleDate = await raffleMetadata.get(raffle.idRafflesDetails, 'raffle_date');
+          const buttonText = raffleDate || new Date(raffle.createdAt).toLocaleDateString('pt-BR');
+          
+          // No privado, incluir nome do grupo no botão
+          const buttonLabel = isPrivate 
+            ? `📅 ${buttonText} - ${raffle.nameGroup} (${raffle.participantCount})`
+            : `📅 ${buttonText} (${raffle.participantCount} participantes)`;
+          
+          buttons.push([Markup.button.callback(
+            buttonLabel,
+            `ver_participantes_${raffle.idRafflesDetails}`
+          )]);
+        }
+
+        const headerMessage = isGroup
+          ? `👥 <b>Sorteios Ativos - ${ctx.chat.title}</b>\n\nSelecione um sorteio para ver os participantes:`
+          : '👥 <b>Seus Sorteios Ativos</b>\n\nSelecione um sorteio para ver os participantes:';
+
         return ctx.reply(
-          '❌ <b>Uso incorreto!</b>\n\n' +
-          '📝 <b>Formato correto:</b>\n' +
-          '<code>/participantes código_do_sorteio</code>\n\n' +
-          '📌 <b>Exemplo:</b>\n' +
-          '<code>/participantes raffle_1730923456789</code>\n\n' +
-          '💡 <b>Dica:</b> Use <code>/sorteios</code> para ver os códigos disponíveis.',
-          { parse_mode: 'HTML' }
+          headerMessage,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(buttons)
+          }
         );
       }
 
@@ -207,6 +260,136 @@ function setupParticipantesCommand(bot) {
     } catch (error) {
       console.error('[PARTICIPANTES] Erro no comando /participantes:', error);
       await ctx.reply('❌ Erro ao buscar participantes. Tente novamente.');
+    }
+  });
+
+  // Handler para callback dos botões de ver participantes
+  bot.action(/ver_participantes_(.+)/, async (ctx) => {
+    try {
+      const raffleId = ctx.match[1];
+      
+      // Deletar a mensagem com os botões
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {
+        // Ignorar erro se não conseguir deletar
+        console.log('[PARTICIPANTES] Não foi possível deletar mensagem:', e.message);
+      }
+      
+      // Buscar informações do sorteio
+      const raffleCheck = await db.query(
+        `SELECT 
+          rd.idRafflesDetails,
+          rd.prizeDescription,
+          rd.participantCount,
+          rd.numWinners,
+          rd.statusRaffles,
+          rd.createdAt,
+          rd.performedAt,
+          g.nameGroup
+        FROM tbRafflesDetails rd
+        INNER JOIN tbGroup g ON rd.fkIdGroup = g.idGroup
+        WHERE rd.idRafflesDetails = ?`,
+        [raffleId]
+      );
+
+      if (!raffleCheck || raffleCheck.length === 0) {
+        return ctx.answerCbQuery('❌ Sorteio não encontrado!', { show_alert: true });
+      }
+
+      const raffle = raffleCheck[0];
+
+      // Buscar participantes
+      const participants = await db.query(
+        `SELECT 
+          r.fkIdUser,
+          r.isWinner,
+          r.winPosition,
+          r.createdAt,
+          m.valueMetadata as userName
+        FROM tbRaffles r
+        LEFT JOIN tbMetadataUser m ON r.fkIdUser = m.fkIdUser AND m.fkIdMetadata = (
+          SELECT idMetadata FROM tbMetadata WHERE nameMetadata = 'name' LIMIT 1
+        )
+        WHERE r.fkIdRafflesDetails = ?
+        ORDER BY r.isWinner DESC, r.winPosition ASC, r.createdAt ASC`,
+        [raffleId]
+      );
+
+      if (!participants || participants.length === 0) {
+        return ctx.answerCbQuery('📭 Este sorteio ainda não tem participantes.', { show_alert: true });
+      }
+
+      // Formatar mensagem
+      const statusEmoji = {
+        open: '🟢',
+        drawn: '✅',
+        cancelled: '❌'
+      };
+
+      const statusName = {
+        open: 'Aberto',
+        drawn: 'Finalizado',
+        cancelled: 'Cancelado'
+      };
+
+      // Buscar metadata do sorteio
+      const raffleTitle = await raffleMetadata.get(raffleId, 'raffle_title');
+      const raffleDate = await raffleMetadata.get(raffleId, 'raffle_date');
+
+      let message = `📊 <b>Participantes do Sorteio</b>\n\n`;
+      
+      if (raffleTitle) {
+        message += `📋 <b>Título:</b> ${raffleTitle}\n`;
+      }
+      if (raffleDate) {
+        message += `📅 <b>Data:</b> ${raffleDate}\n`;
+      }
+      
+      message += `📱 <b>Grupo:</b> ${raffle.nameGroup}\n`;
+      message += `${statusEmoji[raffle.statusRaffles]} <b>Status:</b> ${statusName[raffle.statusRaffles]}\n`;
+      message += `👥 <b>Total:</b> ${raffle.participantCount} participantes\n`;
+      message += `🏆 <b>Vencedores:</b> ${raffle.numWinners}\n\n`;
+
+      // Separar vencedores e participantes
+      const winners = participants.filter(p => p.isWinner === 1);
+      const regularParticipants = participants.filter(p => p.isWinner === 0);
+
+      // Listar vencedores (se houver)
+      if (winners.length > 0) {
+        message += '🏆 <b>VENCEDORES:</b>\n';
+        winners.forEach((winner) => {
+          const name = winner.userName || 'Sem nome';
+          const position = winner.winPosition ? `${winner.winPosition}º lugar - ` : '';
+          message += `   ${position}<a href="tg://user?id=${winner.fkIdUser}">${name}</a>\n`;
+        });
+        message += '\n';
+      }
+
+      // Listar participantes
+      if (regularParticipants.length > 0) {
+        message += '👥 <b>PARTICIPANTES:</b>\n';
+        
+        const maxDisplay = 50; // Limite menor para callback
+        const toDisplay = regularParticipants.slice(0, maxDisplay);
+        
+        toDisplay.forEach((participant, index) => {
+          const name = participant.userName || 'Sem nome';
+          message += `   ${index + 1}. <a href="tg://user?id=${participant.fkIdUser}">${name}</a>\n`;
+        });
+
+        if (regularParticipants.length > maxDisplay) {
+          message += `\n   ... e mais ${regularParticipants.length - maxDisplay} participantes\n`;
+        }
+      }
+
+      // Responder callback e enviar mensagem
+      await ctx.answerCbQuery();
+      await ctx.reply(message, { parse_mode: 'HTML' });
+
+    } catch (error) {
+      console.error('[PARTICIPANTES] Erro no callback ver_participantes:', error);
+      await ctx.answerCbQuery('❌ Erro ao buscar participantes.', { show_alert: true });
     }
   });
 }
