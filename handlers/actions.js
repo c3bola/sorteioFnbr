@@ -2,6 +2,23 @@ const { Markup } = require('telegraf');
 const db = require('../data/database');
 const { isAdmin } = require('../utils/utils');
 const Logger = require('../utils/logger');
+const { parseCaptionInfo } = require('../utils/captionParser');
+const raffleMetadata = require('../utils/raffleMetadata');
+
+/**
+ * Helper para responder callback queries ignorando erros de timeout
+ */
+async function safeAnswerCbQuery(ctx, text, options = {}) {
+  try {
+    await ctx.answerCbQuery(text, options);
+  } catch (error) {
+    if (error.response?.error_code === 400 && error.response?.description?.includes('too old')) {
+      console.log('[CALLBACK] Query muito antiga, ignorando resposta');
+    } else {
+      console.error('[CALLBACK] Erro ao responder:', error.message);
+    }
+  }
+}
 
 function setupActionHandlers(bot) {
   const logger = new Logger(bot);
@@ -14,38 +31,73 @@ function setupActionHandlers(bot) {
       const userId = ctx.from.id;
       const userName = ctx.from.first_name;
 
+      console.log(`[PARTICIPAÇÃO] Iniciando - User: ${userId} (${userName}), Raffle: ${raffleId}, Group: ${groupId}`);
+
       // Verificar se o sorteio existe, se não criar
       const raffleCheck = await db.query('SELECT idRafflesDetails FROM tbRafflesDetails WHERE idRafflesDetails = ?', [raffleId]);
       
       if (!raffleCheck || raffleCheck.length === 0) {
-        // Criar sorteio se não existir
+        console.log(`[PARTICIPAÇÃO] Criando sorteio ${raffleId}`);
+        
+        // Extrair informações da legenda
+        const caption = ctx.callbackQuery.message.caption || '';
+        const captionInfo = parseCaptionInfo(caption);
+        
+        console.log(`[PARTICIPAÇÃO] Informações extraídas:`, captionInfo);
+        
+        // Criar sorteio se não existir (versão antiga da procedure com 4 parâmetros)
         await db.callProcedure('sp_create_raffle', [
           raffleId,
           groupId,
           1, // numWinners padrão
-          'Sorteio via botão inline'
+          caption || 'Sorteio via botão inline'
         ]);
+
+        // Salvar informações estruturadas como metadata
+        await raffleMetadata.saveCaptionInfo(raffleId, captionInfo);
       }
 
       // Registrar participação usando a procedure
       try {
-        await db.callProcedure('sp_register_participation', [
+        console.log(`[PARTICIPAÇÃO] Chamando sp_register_participation`);
+        const result = await db.callProcedure('sp_register_participation', [
           raffleId,
           userId,
           userName,
           groupId
         ]);
+        console.log(`[PARTICIPAÇÃO] Procedure executada com sucesso:`, result);
         
-        ctx.answerCbQuery(`${userName} está participando do sorteio!`, { show_alert: true });
+        // Verificar se realmente foi registrado
+        const verifyResult = await db.query(
+          'SELECT COUNT(*) as count FROM tbRaffles WHERE fkIdRafflesDetails = ? AND fkIdUser = ?',
+          [raffleId, userId]
+        );
+        console.log(`[PARTICIPAÇÃO] Verificação no banco: ${verifyResult[0].count} registro(s) encontrado(s)`);
+        
+        if (verifyResult[0].count > 0) {
+          await safeAnswerCbQuery(ctx, `${userName} está participando do sorteio!`, { show_alert: true });
+        } else {
+          console.error(`[PARTICIPAÇÃO ERRO] Procedure executou mas não gravou no banco!`);
+          await safeAnswerCbQuery(ctx, '❌ Erro ao registrar participação. Tente novamente.', { show_alert: true });
+          return;
+        }
       } catch (error) {
         if (error.message.includes('Assinatura')) {
           // Erro de assinatura
-          return ctx.answerCbQuery(error.message, { show_alert: true });
+          console.log(`[PARTICIPAÇÃO] Assinatura necessária - User: ${userId}`);
+          await safeAnswerCbQuery(ctx, error.message, { show_alert: true });
+          return;
         } else if (error.code === 'ER_DUP_ENTRY') {
-          // Usuário já está participando
-          return ctx.answerCbQuery('Você já está participando do sorteio.', { show_alert: true });
+          // Usuário já está participando (comportamento esperado)
+          console.log(`[PARTICIPAÇÃO] Duplicada ignorada - User: ${userId} (${userName}), Raffle: ${raffleId}`);
+          await safeAnswerCbQuery(ctx, 'Você já está participando do sorteio.', { show_alert: true });
+          return;
         } else {
-          throw error;
+          // Erro inesperado - logar completo
+          console.error(`[PARTICIPAÇÃO ERRO]`, error);
+          await safeAnswerCbQuery(ctx, '❌ Erro ao processar participação.', { show_alert: true });
+          return;
         }
       }
 
@@ -59,14 +111,13 @@ function setupActionHandlers(bot) {
       // Atualizar caption com número de participantes
       let originalCaption = ctx.callbackQuery.message.caption;
       let newCaption;
-      if (!(originalCaption.includes('Participantes:'))) {
+      
+      if (!originalCaption.includes('Participantes:')) {
+        // Primeira participação - adicionar linha de participantes
         newCaption = `${originalCaption}\n\nParticipantes: ${numParticipants}`;
       } else {
-        if(numParticipants<=9){
-          newCaption = `${ctx.callbackQuery.message.caption.slice(0, -1)}${numParticipants}`;
-        }else{
-          newCaption = `${ctx.callbackQuery.message.caption.slice(0, -2)} ${numParticipants}`;
-        }
+        // Atualizar contador existente usando regex para substituir o número
+        newCaption = originalCaption.replace(/Participantes:\s*\d+/, `Participantes: ${numParticipants}`);
       }
 
       if (newCaption !== ctx.callbackQuery.message.caption) {
@@ -98,7 +149,7 @@ function setupActionHandlers(bot) {
       }
     } catch (error) {
       console.error('Error handling participar action:', error);
-      ctx.answerCbQuery('Ocorreu um erro ao participar do sorteio.', { show_alert: true });
+      await safeAnswerCbQuery(ctx, 'Ocorreu um erro ao participar do sorteio.', { show_alert: true });
     }
   });
 
