@@ -1,5 +1,6 @@
 const { Markup } = require('telegraf');
 const db = require('../data/database');
+const raffleMetadata = require('../utils/raffleMetadata');
 
 /**
  * Comando /sorteios - Listar sorteios por status (apenas admins no privado)
@@ -58,6 +59,14 @@ function setupSorteiosCommand(bot) {
     const status = ctx.match[1];
 
     try {
+      // Deletar a mensagem com os botões
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {
+        // Ignorar erro se não conseguir deletar
+        console.log('[SORTEIOS] Não foi possível deletar mensagem:', e.message);
+      }
+
       // Verificar se é admin
       const adminCheck = await db.query(
         `SELECT u.idUser 
@@ -121,11 +130,33 @@ function setupSorteiosCommand(bot) {
 
       let message = `${statusEmoji[status]} *Sorteios ${statusName[status]}*\n\n`;
       
-      raffles.forEach((raffle, index) => {
+      for (let index = 0; index < raffles.length; index++) {
+        const raffle = raffles[index];
         const createdDate = new Date(raffle.createdAt).toLocaleString('pt-BR');
         const performedDate = raffle.performedAt ? new Date(raffle.performedAt).toLocaleString('pt-BR') : '-';
         
+        // Buscar metadados do sorteio
+        const raffleTitle = await raffleMetadata.get(raffle.idRafflesDetails, 'raffle_title');
+        const raffleDate = await raffleMetadata.get(raffle.idRafflesDetails, 'raffle_date');
+        const raffleType = await raffleMetadata.get(raffle.idRafflesDetails, 'raffle_type');
+        
         message += `*${index + 1}.* \`${raffle.idRafflesDetails}\`\n`;
+        
+        // Adicionar título se existir
+        if (raffleTitle) {
+          message += `   🎯 ${raffleTitle}\n`;
+        }
+        
+        // Adicionar data programada se existir
+        if (raffleDate) {
+          message += `   📅 Data: ${raffleDate}\n`;
+        }
+        
+        // Adicionar tipo se existir
+        if (raffleType) {
+          message += `   🏷️ Tipo: ${raffleType}\n`;
+        }
+        
         message += `   📱 Grupo: ${raffle.nameGroup}\n`;
         message += `   👥 Participantes: ${raffle.participantCount}\n`;
         message += `   🏆 Vencedores: ${raffle.numWinners}\n`;
@@ -135,7 +166,8 @@ function setupSorteiosCommand(bot) {
           message += `   ✅ Realizado: ${performedDate}\n`;
         }
         
-        if (raffle.prizeDescription) {
+        // Só mostrar prizeDescription se não tiver título e não for muito longa
+        if (raffle.prizeDescription && !raffleTitle && raffle.prizeDescription.length <= 100) {
           const shortDesc = raffle.prizeDescription.length > 50 
             ? raffle.prizeDescription.substring(0, 50) + '...' 
             : raffle.prizeDescription;
@@ -143,7 +175,7 @@ function setupSorteiosCommand(bot) {
         }
         
         message += '\n';
-      });
+      }
 
       message += `💡 *Dica:* Use \`/participantes <código>\` para ver os participantes de um sorteio.`;
 
