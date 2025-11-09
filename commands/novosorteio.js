@@ -2,6 +2,80 @@ const { Markup } = require('telegraf');
 const { isAdmin } = require('../utils/utils');
 const db = require('../data/database');
 const Logger = require('../utils/logger');
+const { parseCaptionInfo, formatCaptionInfo } = require('../utils/captionParser');
+const raffleMetadata = require('../utils/raffleMetadata');
+
+/**
+ * Notifica usuários com assinatura ativa sobre novo sorteio
+ * Respeita limites da API: max 30 msgs/segundo
+ */
+async function notifySubscribers(bot, raffleId, groupId, groupName, captionInfo) {
+  try {
+    console.log(`[NOTIFICAÇÃO] Iniciando notificação de novo sorteio - Raffle: ${raffleId}, Grupo: ${groupId}`);
+    
+    // Buscar usuários com assinatura ativa neste grupo
+    const subscribers = await db.query(
+      `SELECT DISTINCT
+        s.fkIdUser,
+        (SELECT mu.valueMetadata FROM tbMetadataUser mu 
+         JOIN tbMetadata m ON mu.fkIdMetadata = m.idMetadata 
+         WHERE mu.fkIdUser = s.fkIdUser AND m.nameMetadata = 'name' LIMIT 1) AS user_name
+       FROM tbSubscription s
+       WHERE s.fkIdGroup = ?
+         AND s.statusSubscription = 'active'
+         AND s.endDate >= CURDATE()`,
+      [groupId]
+    );
+
+    if (!subscribers || subscribers.length === 0) {
+      console.log(`[NOTIFICAÇÃO] Nenhum assinante ativo no grupo ${groupId}`);
+      return;
+    }
+
+    console.log(`[NOTIFICAÇÃO] ${subscribers.length} assinante(s) serão notificados`);
+
+    const title = captionInfo.title || 'Novo Sorteio';
+    const date = captionInfo.raffleDate || 'A definir';
+    const type = captionInfo.raffleType || '';
+
+    let notified = 0;
+    let failed = 0;
+
+    // Respeitar limite da API: 30 mensagens/segundo
+    // Enviar em lotes com delay
+    for (let i = 0; i < subscribers.length; i++) {
+      const subscriber = subscribers[i];
+      
+      try {
+        await bot.telegram.sendMessage(
+          subscriber.fkIdUser,
+          `🎉 *Novo Sorteio Disponível!*\n\n` +
+          `🎯 *${title}*\n` +
+          `📅 *Data:* ${date}\n` +
+          `${type ? `🏷️ *Tipo:* ${type}\n` : ''}` +
+          `💬 *Grupo:* ${groupName}\n\n` +
+          `✨ Participe agora para concorrer!`,
+          { parse_mode: 'Markdown' }
+        );
+        notified++;
+        console.log(`[NOTIFICAÇÃO] ✅ ${subscriber.fkIdUser} (${subscriber.user_name})`);
+      } catch (error) {
+        failed++;
+        console.log(`[NOTIFICAÇÃO] ❌ ${subscriber.fkIdUser}: ${error.message}`);
+      }
+
+      // Delay a cada 25 mensagens (folga de 5 mensagens)
+      if ((i + 1) % 25 === 0 && i < subscribers.length - 1) {
+        console.log(`[NOTIFICAÇÃO] Aguardando 1s (enviadas ${i + 1}/${subscribers.length})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    console.log(`[NOTIFICAÇÃO] Concluído - Sucesso: ${notified}, Falhas: ${failed}`);
+  } catch (error) {
+    console.error('[NOTIFICAÇÃO] Erro ao notificar assinantes:', error);
+  }
+}
 
 function setupNovosorteioCommand(bot) {
   const logger = new Logger(bot);
@@ -40,13 +114,23 @@ function setupNovosorteioCommand(bot) {
         const photo = message.photo[message.photo.length - 1].file_id;
         const caption = message.caption || '';
 
-        // Criar sorteio no banco de dados
+        // Extrair informações da legenda
+        const captionInfo = parseCaptionInfo(caption);
+        console.log('[NOVO SORTEIO] Informações extraídas:', captionInfo);
+
+        // Usar título como descrição do prêmio, ou a legenda completa se não houver título
+        const prizeDesc = captionInfo.title || caption || 'Sorteio criado via /novosorteio';
+
+        // Criar sorteio no banco de dados (versão antiga da procedure com 4 parâmetros)
         await db.callProcedure('sp_create_raffle', [
           raffleId,
           groupId,
           numWinners,
-          caption || 'Sorteio criado via /novosorteio'
+          prizeDesc
         ]);
+
+        // Salvar informações estruturadas como metadata
+        await raffleMetadata.saveCaptionInfo(raffleId, captionInfo);
 
         const sentMessage = await ctx.replyWithPhoto(photo, {
           caption: caption,
@@ -60,13 +144,19 @@ function setupNovosorteioCommand(bot) {
         // Fixar a mensagem com os botões do sorteio
         await ctx.telegram.pinChatMessage(ctx.chat.id, sentMessage.message_id);
 
+        // Notificar assinantes sobre o novo sorteio (assíncrono, não bloqueia)
+        notifySubscribers(bot, raffleId, groupId, groupName, captionInfo).catch(err => {
+          console.error('[NOVO SORTEIO] Erro ao notificar assinantes:', err);
+        });
+
         // Enviar log de novo sorteio
+        const formattedInfo = formatCaptionInfo(captionInfo);
         await logger.logRaffle(
           `🎲 **Novo sorteio criado**\n\n` +
           `🎯 ID: \`${raffleId}\`\n` +
           `🏆 Vencedores: ${numWinners}\n` +
           `💬 Grupo: ${ctx.chat.title || 'Desconhecido'} (\`${groupId}\`)\n` +
-          `${message.caption ? `📝 Descrição: ${message.caption}\n` : ''}` +
+          `${formattedInfo ? `${formattedInfo}\n` : ''}` +
           `👮 Criado por: ${ctx.from.first_name || ctx.from.username} (\`${ctx.from.id}\`)\n` +
           `📅 Data: ${new Date().toLocaleString('pt-BR')}`
         );
