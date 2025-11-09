@@ -12,6 +12,8 @@ const { setupSubscriptionCommand } = require('./commands/subscription');
 const { setupSorteiosCommand } = require('./commands/sorteios');
 const { setupParticipantesCommand } = require('./commands/participantes');
 const { setupAssinaturasCommand } = require('./commands/assinaturas');
+const { setupRegulamentoCommand } = require('./commands/regulamento');
+const { setupPixCommand } = require('./commands/pix');
 const setupLogCommand = require('./commands/log');
 const { setupActionHandlers } = require('./handlers/actions');
 const SubscriptionNotifier = require('./utils/subscriptionNotifier');
@@ -35,6 +37,8 @@ setupSubscriptionCommand(bot);
 setupSorteiosCommand(bot);
 setupParticipantesCommand(bot);
 setupAssinaturasCommand(bot);
+setupRegulamentoCommand(bot);
+setupPixCommand(bot);
 setupLogCommand(bot);
 setupActionHandlers(bot);
 

@@ -18,6 +18,8 @@ function setupHelpCommand(bot) {
       helpMessage += `/assinatura - Ver status da sua assinatura\n`;
       helpMessage += `/assinaturas - Ver status da sua assinatura\n`;
       helpMessage += `/renovar - Informações para renovar\n`;
+      helpMessage += `/pix - Ver informações de pagamento\n`;
+      helpMessage += `/regulamento - Ver regulamento completo\n`;
       helpMessage += `/help - Mostrar esta mensagem\n\n`;
 
       // Comandos de admin (se aplicável)
